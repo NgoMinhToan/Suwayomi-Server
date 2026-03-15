@@ -12,6 +12,7 @@ import suwayomi.tachidesk.manga.model.table.CategoryMangaTable
 import suwayomi.tachidesk.manga.model.table.CategoryTable
 import suwayomi.tachidesk.manga.model.table.ChapterTable
 import suwayomi.tachidesk.manga.model.table.MangaTable
+import suwayomi.tachidesk.manga.model.table.SourceTable
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.nio.file.Path
@@ -30,6 +31,15 @@ fun getComicInfo(
     val dateUpload = chapter[ChapterTable.date_upload]
     val localDate =
         Instant.ofEpochMilli(dateUpload).atZone(ZoneId.systemDefault()).toLocalDate()
+
+    val sourceName =
+        transaction {
+            SourceTable
+                .selectAll()
+                .where { SourceTable.id eq manga[MangaTable.sourceReference] }
+                .firstOrNull()
+                ?.get(SourceTable.name)
+        }
 
     return ComicInfo(
         title = ComicInfo.Title(chapter[ChapterTable.name]),
@@ -52,6 +62,7 @@ fun getComicInfo(
             ComicInfo.PublishingStatusTachiyomi(
                 ComicInfoPublishingStatus.toComicInfoValue(manga[MangaTable.status].toLong()),
             ),
+        sourceMihon = sourceName?.let { ComicInfo.SourceMihon(it) },
         categories = categories?.let { ComicInfo.CategoriesTachiyomi(it.joinToString()) },
         inker = null,
         colorist = null,

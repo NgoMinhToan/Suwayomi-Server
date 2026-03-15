@@ -208,6 +208,22 @@ class ServerConfig(
         defaultValue = false,
     )
 
+    val downloadComicInfoToMangaFolder: MutableStateFlow<Boolean> by BooleanSetting(
+        protoNumber = 86,
+        group = SettingGroup.DOWNLOADER,
+        privacySafe = true,
+        defaultValue = false,
+        description = "Save ComicInfo.xml file with manga metadata in download folder",
+    )
+
+    val downloadCoverToMangaFolder: MutableStateFlow<Boolean> by BooleanSetting(
+        protoNumber = 87,
+        group = SettingGroup.DOWNLOADER,
+        privacySafe = true,
+        defaultValue = false,
+        description = "Save cover image in download folder",
+    )
+
     val downloadsPath: MutableStateFlow<String> by PathSetting(
         protoNumber = 16,
         group = SettingGroup.DOWNLOADER,

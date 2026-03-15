@@ -55,6 +55,7 @@ data class ComicInfo(
     val tags: Tags?,
     val web: Web?,
     val publishingStatus: PublishingStatusTachiyomi?,
+    val sourceMihon: SourceMihon?,
     val categories: CategoriesTachiyomi?,
     val day: Day?,
     val month: Month?,
@@ -176,6 +177,12 @@ data class ComicInfo(
     @Serializable
     @XmlSerialName("PublishingStatusTachiyomi", "http://www.w3.org/2001/XMLSchema", "ty")
     data class PublishingStatusTachiyomi(
+        @XmlValue(true) val value: String = "",
+    )
+
+    @Serializable
+    @XmlSerialName("SourceMihon", "http://www.w3.org/2001/XMLSchema", "mh")
+    data class SourceMihon(
         @XmlValue(true) val value: String = "",
     )
 
