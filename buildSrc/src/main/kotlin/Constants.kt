@@ -12,7 +12,7 @@ const val MainClass = "suwayomi.tachidesk.MainKt"
 // should be bumped with each stable release
 val getTachideskVersion = { "v2.1.${getCommitCount()}" }
 
-val webUIRevisionTag = "v3049"
+val webUIRevisionTag = "v3050"
 
 private val getCommitCount = {
     runCatching {
