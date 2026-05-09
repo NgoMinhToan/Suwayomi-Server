@@ -206,20 +206,12 @@ object WebInterfaceManager {
 
         if (ServerSubpath.isDefined() && orgIndexHtml.exists()) {
             val originalIndexHtml = orgIndexHtml.readText()
-            val subpathInjectionScript =
-                """
-                <script>
-                    // <<suwayomi-subpath-injection>>
-                    const baseTag = document.createElement('base');
-                    baseTag.href = location.origin + "${ServerSubpath.asRootPath()}";
-                    document.head.appendChild(baseTag);
-                </script>
-                """.trimIndent()
+            val subpathInjectionBaseTag = "<base href=\"${ServerSubpath.asRootPath()}\">"
 
             val indexHtmlWithSubpathInjection =
                 originalIndexHtml.replace(
                     "<head>",
-                    "<head>$subpathInjectionScript",
+                    "<head>$subpathInjectionBaseTag",
                 )
 
             orgIndexHtml.writeText(indexHtmlWithSubpathInjection)
@@ -312,11 +304,25 @@ object WebInterfaceManager {
             return
         }
 
-        val flavor = WebUIFlavor.current
         val servedFlavor = getServedWebUIFlavor()
 
         val log =
-            KotlinLogging.logger("${logger.name} setupWebUI(flavor= ${flavor.uiName}, servedFlavor= ${servedFlavor.uiName})")
+            KotlinLogging.logger(
+                "${logger.name} setupWebUI(flavor= ${WebUIFlavor.current.uiName}, servedFlavor= ${servedFlavor.uiName}, channel= ${serverConfig.webUIChannel})",
+            )
+
+        val flavor =
+            if (serverConfig.webUIChannel.value == WebUIChannel.BUNDLED) {
+                if (serverConfig.webUIFlavor.value != WebUIFlavor.default) {
+                    log.warn {
+                        "Changed flavor to ${WebUIFlavor.default.uiName}. Channel \"${WebUIChannel.BUNDLED}\" only works with the default flavor"
+                    }
+                }
+
+                WebUIFlavor.default
+            } else {
+                WebUIFlavor.current
+            }
 
         if (doesLocalWebUIExist(applicationDirs.webUIRoot)) {
             val currentVersion = getLocalVersion()
