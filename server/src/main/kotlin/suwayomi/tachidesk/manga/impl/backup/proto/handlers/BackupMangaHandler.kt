@@ -8,16 +8,18 @@ package suwayomi.tachidesk.manga.impl.backup.proto.handlers
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import eu.kanade.tachiyomi.source.model.UpdateStrategy
-import org.jetbrains.exposed.dao.id.EntityID
-import org.jetbrains.exposed.sql.ResultRow
-import org.jetbrains.exposed.sql.SortOrder
-import org.jetbrains.exposed.sql.and
-import org.jetbrains.exposed.sql.batchInsert
-import org.jetbrains.exposed.sql.insertAndGetId
-import org.jetbrains.exposed.sql.selectAll
-import org.jetbrains.exposed.sql.statements.BatchUpdateStatement
-import org.jetbrains.exposed.sql.transactions.transaction
-import org.jetbrains.exposed.sql.update
+import org.jetbrains.exposed.v1.core.ResultRow
+import org.jetbrains.exposed.v1.core.SortOrder
+import org.jetbrains.exposed.v1.core.and
+import org.jetbrains.exposed.v1.core.dao.id.EntityID
+import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.statements.BatchUpdateStatement
+import org.jetbrains.exposed.v1.jdbc.batchInsert
+import org.jetbrains.exposed.v1.jdbc.insertAndGetId
+import org.jetbrains.exposed.v1.jdbc.selectAll
+import org.jetbrains.exposed.v1.jdbc.statements.toExecutable
+import org.jetbrains.exposed.v1.jdbc.transactions.transaction
+import org.jetbrains.exposed.v1.jdbc.update
 import suwayomi.tachidesk.manga.impl.CategoryManga
 import suwayomi.tachidesk.manga.impl.Chapter
 import suwayomi.tachidesk.manga.impl.Chapter.modifyChaptersMetas
@@ -36,7 +38,6 @@ import suwayomi.tachidesk.manga.model.dataclass.TrackRecordDataClass
 import suwayomi.tachidesk.manga.model.table.ChapterTable
 import suwayomi.tachidesk.manga.model.table.MangaStatus
 import suwayomi.tachidesk.manga.model.table.MangaTable
-import suwayomi.tachidesk.manga.model.table.toDataClass
 import suwayomi.tachidesk.server.database.dbTransaction
 import java.util.Date
 import kotlin.math.max
@@ -73,6 +74,10 @@ object BackupMangaHandler {
                         dateAdded = mangaRow[MangaTable.inLibraryAt].seconds.inWholeMilliseconds,
                         viewer = 0, // not supported in Tachidesk
                         updateStrategy = UpdateStrategy.valueOf(mangaRow[MangaTable.updateStrategy]),
+                        lastModifiedAt = mangaRow[MangaTable.lastModifiedAt],
+                        version = mangaRow[MangaTable.version],
+                        initialized = mangaRow[MangaTable.initialized],
+                        memo = mangaRow[MangaTable.memo].encodeToByteArray(),
                     )
 
                 val mangaId = mangaRow[MangaTable.id].value
@@ -88,29 +93,32 @@ object BackupMangaHandler {
                                 .selectAll()
                                 .where { ChapterTable.manga eq mangaId }
                                 .orderBy(ChapterTable.sourceOrder to SortOrder.DESC)
-                                .map {
-                                    ChapterTable.toDataClass(it)
-                                }
+                                .toList()
                         }
+
                     if (flags.includeChapters) {
-                        val chapterToMeta = Chapter.getChaptersMetaMaps(chapters.map { it.id })
+                        val chapterToMeta =
+                            Chapter.getChaptersMetaMaps(chapters.map { it[ChapterTable.id].value })
 
                         backupManga.chapters =
                             chapters.map {
                                 BackupChapter(
-                                    it.url,
-                                    it.name,
-                                    it.scanlator,
-                                    it.read,
-                                    it.bookmarked,
-                                    it.lastPageRead,
-                                    it.fetchedAt.seconds.inWholeMilliseconds,
-                                    it.uploadDate,
-                                    it.chapterNumber,
-                                    chapters.size - it.index,
+                                    url = it[ChapterTable.url],
+                                    name = it[ChapterTable.name],
+                                    scanlator = it[ChapterTable.scanlator],
+                                    read = it[ChapterTable.isRead],
+                                    bookmark = it[ChapterTable.isBookmarked],
+                                    lastPageRead = it[ChapterTable.lastPageRead],
+                                    dateFetch = it[ChapterTable.fetchedAt].seconds.inWholeMilliseconds,
+                                    dateUpload = it[ChapterTable.date_upload],
+                                    chapterNumber = it[ChapterTable.chapter_number],
+                                    sourceOrder = chapters.size - it[ChapterTable.sourceOrder],
+                                    lastModifiedAt = it[ChapterTable.lastModifiedAt],
+                                    version = it[ChapterTable.version],
+                                    memo = it[ChapterTable.memo].encodeToByteArray(),
                                 ).apply {
                                     if (flags.includeClientData) {
-                                        this.meta = chapterToMeta[it.id] ?: emptyMap()
+                                        this.meta = chapterToMeta[it[ChapterTable.id].value] ?: emptyMap()
                                     }
                                 }
                             }
@@ -118,10 +126,10 @@ object BackupMangaHandler {
                     if (flags.includeHistory) {
                         backupManga.history =
                             chapters.mapNotNull {
-                                if (it.lastReadAt > 0) {
+                                if (it[ChapterTable.lastReadAt] > 0) {
                                     BackupHistory(
-                                        url = it.url,
-                                        lastRead = it.lastReadAt.seconds.inWholeMilliseconds,
+                                        url = it[ChapterTable.url],
+                                        lastRead = it[ChapterTable.lastReadAt].seconds.inWholeMilliseconds,
                                     )
                                 } else {
                                     null
@@ -230,6 +238,10 @@ object BackupMangaHandler {
                                 it[inLibrary] = manga.favorite
 
                                 it[inLibraryAt] = manga.dateAdded.milliseconds.inWholeSeconds
+
+                                it[lastModifiedAt] = manga.lastModifiedAt
+                                it[version] = manga.version
+                                it[memo] = manga.memo.decodeToString()
                             }.value
                     } else {
                         val dbMangaId = dbManga[MangaTable.id].value
@@ -249,6 +261,10 @@ object BackupMangaHandler {
                             it[inLibrary] = manga.favorite || dbManga[inLibrary]
 
                             it[inLibraryAt] = manga.dateAdded.milliseconds.inWholeSeconds
+
+                            it[lastModifiedAt] = manga.lastModifiedAt
+                            it[version] = manga.version
+                            it[memo] = manga.memo.decodeToString()
                         }
 
                         dbMangaId
@@ -266,7 +282,7 @@ object BackupMangaHandler {
                     restoreMangaChapterData(mangaId, restoreMode, chapters, history, flags)
                 }
 
-                // merge categories
+                // update categories
                 if (flags.includeCategories) {
                     restoreMangaCategoryData(mangaId, categoryIds)
                 }
@@ -337,30 +353,35 @@ object BackupMangaHandler {
                             this[ChapterTable.lastReadAt] =
                                 historyByChapter[chapter.url]?.maxOrNull()?.milliseconds?.inWholeSeconds ?: 0
                         }
+
+                        this[ChapterTable.lastModifiedAt] = chapter.lastModifiedAt
+                        this[ChapterTable.version] = chapter.version
+                        this[ChapterTable.memo] = chapter.memo.decodeToString()
                     }.map { it[ChapterTable.id].value }
             } else {
                 emptyList()
             }
 
         if (chaptersToUpdateToDbChapter.isNotEmpty()) {
-            BatchUpdateStatement(ChapterTable).apply {
-                chaptersToUpdateToDbChapter.forEach { (backupChapter, dbChapter) ->
-                    addBatch(EntityID(dbChapter[ChapterTable.id].value, ChapterTable))
-                    if (flags.includeChapters) {
-                        this[ChapterTable.isRead] = backupChapter.read || dbChapter[ChapterTable.isRead]
-                        this[ChapterTable.lastPageRead] =
-                            max(backupChapter.lastPageRead, dbChapter[ChapterTable.lastPageRead]).coerceAtLeast(0)
-                        this[ChapterTable.isBookmarked] = backupChapter.bookmark || dbChapter[ChapterTable.isBookmarked]
-                    }
+            BatchUpdateStatement(ChapterTable)
+                .apply {
+                    chaptersToUpdateToDbChapter.forEach { (backupChapter, dbChapter) ->
+                        addBatch(EntityID(dbChapter[ChapterTable.id].value, ChapterTable))
+                        if (flags.includeChapters) {
+                            this[ChapterTable.isRead] = backupChapter.read || dbChapter[ChapterTable.isRead]
+                            this[ChapterTable.lastPageRead] =
+                                max(backupChapter.lastPageRead, dbChapter[ChapterTable.lastPageRead]).coerceAtLeast(0)
+                            this[ChapterTable.isBookmarked] = backupChapter.bookmark || dbChapter[ChapterTable.isBookmarked]
+                        }
 
-                    if (flags.includeHistory) {
-                        this[ChapterTable.lastReadAt] =
-                            (historyByChapter[backupChapter.url]?.maxOrNull()?.milliseconds?.inWholeSeconds ?: 0)
-                                .coerceAtLeast(dbChapter[ChapterTable.lastReadAt])
+                        if (flags.includeHistory) {
+                            this[ChapterTable.lastReadAt] =
+                                (historyByChapter[backupChapter.url]?.maxOrNull()?.milliseconds?.inWholeSeconds ?: 0)
+                                    .coerceAtLeast(dbChapter[ChapterTable.lastReadAt])
+                        }
                     }
-                }
-                execute(this@dbTransaction)
-            }
+                }.toExecutable()
+                .execute(this@dbTransaction)
         }
 
         if (flags.includeClientData) {
@@ -384,6 +405,7 @@ object BackupMangaHandler {
         mangaId: Int,
         categoryIds: List<Int>,
     ) {
+        CategoryManga.removeMangaFromAllCategories(mangaId)
         CategoryManga.addMangaToCategories(mangaId, categoryIds)
     }
 

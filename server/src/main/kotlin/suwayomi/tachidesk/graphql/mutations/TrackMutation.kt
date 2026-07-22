@@ -1,12 +1,13 @@
+@file:Suppress("RedundantNullableReturnType", "unused")
+
 package suwayomi.tachidesk.graphql.mutations
 
 import com.expediagroup.graphql.generator.annotations.GraphQLDeprecated
 import com.expediagroup.graphql.generator.annotations.GraphQLDescription
-import graphql.execution.DataFetcherResult
-import org.jetbrains.exposed.sql.and
-import org.jetbrains.exposed.sql.selectAll
-import org.jetbrains.exposed.sql.transactions.transaction
-import suwayomi.tachidesk.graphql.asDataFetcherResult
+import org.jetbrains.exposed.v1.core.and
+import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.jdbc.selectAll
+import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import suwayomi.tachidesk.graphql.directives.RequireAuth
 import suwayomi.tachidesk.graphql.types.TrackRecordType
 import suwayomi.tachidesk.graphql.types.TrackerType
@@ -147,6 +148,36 @@ class TrackMutation {
         }
     }
 
+    data class BindTrackRecordInput(
+        val clientMutationId: String? = null,
+        val mangaId: Int,
+        val trackRecordId: Int,
+    )
+
+    data class BindTrackRecordPayload(
+        val clientMutationId: String?,
+        val trackRecord: TrackRecordType,
+    )
+
+    @RequireAuth
+    fun bindTrackRecord(input: BindTrackRecordInput): CompletableFuture<BindTrackRecordPayload?> {
+        val (clientMutationId, mangaId, trackRecordId) = input
+
+        return future {
+            val boundTrackRecordId = Track.bindTrackRecord(mangaId, trackRecordId)
+
+            val trackRecord =
+                transaction {
+                    TrackRecordTable.selectAll().where { TrackRecordTable.id eq boundTrackRecordId }.first()
+                }
+
+            BindTrackRecordPayload(
+                clientMutationId,
+                TrackRecordType(trackRecord),
+            )
+        }
+    }
+
     data class FetchTrackInput(
         val clientMutationId: String? = null,
         val recordId: Int,
@@ -222,24 +253,22 @@ class TrackMutation {
     )
 
     @RequireAuth
-    fun trackProgress(input: TrackProgressInput): CompletableFuture<DataFetcherResult<TrackProgressPayload?>> {
+    fun trackProgress(input: TrackProgressInput): CompletableFuture<TrackProgressPayload?> {
         val (clientMutationId, mangaId) = input
 
         return future {
-            asDataFetcherResult {
-                Track.trackChapter(mangaId)
-                val trackRecords =
-                    transaction {
-                        TrackRecordTable
-                            .selectAll()
-                            .where { TrackRecordTable.mangaId eq mangaId }
-                            .toList()
-                    }
-                TrackProgressPayload(
-                    clientMutationId,
-                    trackRecords.map { TrackRecordType(it) },
-                )
-            }
+            Track.trackChapter(mangaId)
+            val trackRecords =
+                transaction {
+                    TrackRecordTable
+                        .selectAll()
+                        .where { TrackRecordTable.mangaId eq mangaId }
+                        .toList()
+                }
+            TrackProgressPayload(
+                clientMutationId,
+                trackRecords.map { TrackRecordType(it) },
+            )
         }
     }
 

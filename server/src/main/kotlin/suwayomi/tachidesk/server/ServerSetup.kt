@@ -14,15 +14,13 @@ import com.typesafe.config.ConfigException
 import com.typesafe.config.ConfigRenderOptions
 import com.typesafe.config.ConfigValue
 import com.typesafe.config.parser.ConfigDocument
-import dev.datlag.kcef.KCEF
-import dev.datlag.kcef.KCEFBuilder.Settings.LogSeverity
 import eu.kanade.tachiyomi.App
 import eu.kanade.tachiyomi.createAppModule
 import eu.kanade.tachiyomi.network.NetworkHelper
 import eu.kanade.tachiyomi.source.local.LocalSource
 import io.github.config4k.toConfig
 import io.github.oshai.kotlinlogging.KotlinLogging
-import io.javalin.json.JavalinJackson
+import io.javalin.json.JavalinJackson3
 import io.javalin.json.JsonMapper
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.GlobalScope
@@ -38,10 +36,12 @@ import org.koin.core.context.startKoin
 import org.koin.core.module.Module
 import org.koin.dsl.module
 import suwayomi.tachidesk.global.impl.KcefWebView.Companion.toCefCookie
+import suwayomi.tachidesk.global.impl.sync.SyncManager
 import suwayomi.tachidesk.graphql.types.DatabaseType
 import suwayomi.tachidesk.i18n.LocalizationHelper
 import suwayomi.tachidesk.manga.impl.backup.proto.ProtoBackupExport
 import suwayomi.tachidesk.manga.impl.download.DownloadManager
+import suwayomi.tachidesk.manga.impl.extension.ExtensionStoreService
 import suwayomi.tachidesk.manga.impl.update.IUpdater
 import suwayomi.tachidesk.manga.impl.update.Updater
 import suwayomi.tachidesk.manga.impl.util.lang.renameTo
@@ -49,6 +49,7 @@ import suwayomi.tachidesk.server.database.databaseUp
 import suwayomi.tachidesk.server.generated.BuildConfig
 import suwayomi.tachidesk.server.settings.SettingsRegistry
 import suwayomi.tachidesk.server.util.AppMutex.handleAppMutex
+import suwayomi.tachidesk.server.util.CEFManager
 import suwayomi.tachidesk.server.util.ConfigTypeRegistration
 import suwayomi.tachidesk.server.util.ExitCode
 import suwayomi.tachidesk.server.util.SystemTray
@@ -71,11 +72,6 @@ import java.net.Authenticator
 import java.net.PasswordAuthentication
 import java.security.Security
 import java.util.Locale
-import kotlin.concurrent.thread
-import kotlin.io.path.Path
-import kotlin.io.path.createDirectories
-import kotlin.io.path.div
-import kotlin.math.roundToInt
 
 private val logger = KotlinLogging.logger {}
 
@@ -222,7 +218,7 @@ fun serverModule(applicationDirs: ApplicationDirs): Module =
     module {
         single { applicationDirs }
         single<IUpdater> { Updater() }
-        single<JsonMapper> { JavalinJackson() }
+        single<JsonMapper> { JavalinJackson3() }
     }
 
 @OptIn(DelicateCoroutinesApi::class)
@@ -366,6 +362,7 @@ fun applicationSetup() {
         }
     } catch (e: Exception) {
         logger.error(e) { "Exception while creating initial server.conf" }
+        shutdownApp(ExitCode.SetupConfFileFailed)
     }
 
     // copy local source icon
@@ -378,6 +375,7 @@ fun applicationSetup() {
         }
     } catch (e: Exception) {
         logger.error(e) { "Exception while copying Local source's icon" }
+        shutdownApp(ExitCode.LocalSourceIconCopyFailure)
     }
 
     // fixes #119 , ref:
@@ -391,9 +389,16 @@ fun applicationSetup() {
         "Localization service initialized. Supported languages: ${LocalizationHelper.getSupportedLocales()}"
     }
 
+    runMigrations(applicationDirs)
+
     databaseUp()
 
-    LocalSource.register()
+    try {
+        LocalSource.register()
+    } catch (e: Exception) {
+        logger.error(e) { "Failed to setup LocalSource" }
+        shutdownApp(ExitCode.LocalSourceSetupFailure)
+    }
 
     serverConfig.subscribeTo(
         combine<Any, DatabaseSettings>(
@@ -439,8 +444,6 @@ fun applicationSetup() {
         },
         ignoreInitialValue = false,
     )
-
-    runMigrations(applicationDirs)
 
     setLogLevelFor("org.eclipse.jetty", Level.OFF)
     setLogLevelFor("com.zaxxer.hikari", Level.WARN)
@@ -511,56 +514,18 @@ fun applicationSetup() {
     // start DownloadManager and restore + resume downloads
     DownloadManager.restoreAndResumeDownloads()
 
-    GlobalScope.launch {
-        val logger = KotlinLogging.logger("KCEF")
-        KCEF.init(
-            builder = {
-                progress {
-                    var lastNum = -1
-                    onDownloading {
-                        val num = it.roundToInt()
-                        if (num > lastNum) {
-                            lastNum = num
-                            logger.info { "KCEF download progress: $num%" }
-                        }
-                    }
-                }
-                download { github() }
-                settings {
-                    windowlessRenderingEnabled = true
-                    cachePath = (Path(applicationDirs.dataRoot) / "cache/kcef").toString()
-                    logSeverity = if (serverConfig.debugLogsEnabled.value) LogSeverity.Verbose else LogSeverity.Default
-                }
-                appHandler(
-                    KCEF.AppHandler(
-                        arrayOf(
-                            "--disable-gpu",
-                            // #1486 needed to be able to render without a window
-                            "--off-screen-rendering-enabled",
-                            // #1489 since /dev/shm is restricted in docker (OOM)
-                            "--disable-dev-shm-usage",
-                            // #1723 support Widevine (incomplete)
-                            "--enable-widevine-cdm",
-                            // #1736 JCEF does implement stack guards properly
-                            "--change-stack-guard-on-fork=disable",
-                        ),
-                    ),
-                )
+    SyncManager.scheduleSyncTask()
 
-                val kcefDir = Path(applicationDirs.dataRoot) / "bin/kcef"
-                kcefDir.createDirectories()
-                installDir(kcefDir.toFile())
-            },
-            onError = { it?.printStackTrace() },
-        )
+    // asynchronously initialize CEF
+    GlobalScope.launch {
+        CEFManager.init()
     }
 
-    Runtime.getRuntime().addShutdownHook(
-        thread(start = false) {
-            val logger = KotlinLogging.logger("KCEF")
-            logger.debug { "Shutting down KCEF" }
-            KCEF.disposeBlocking()
-            logger.debug { "KCEF shutdown complete" }
+    serverConfig.subscribeTo(
+        serverConfig.extensionStores,
+        { _ ->
+            ExtensionStoreService.syncPrefsToDb()
         },
+        ignoreInitialValue = false,
     )
 }

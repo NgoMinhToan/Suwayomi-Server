@@ -51,12 +51,10 @@ import android.webkit.WebViewProvider.ScrollDelegate
 import android.webkit.WebViewProvider.ViewDelegate
 import android.webkit.WebViewRenderProcess
 import android.webkit.WebViewRenderProcessClient
-import dev.datlag.kcef.KCEF
-import dev.datlag.kcef.KCEFBrowser
-import dev.datlag.kcef.KCEFClient
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
+import org.cef.CefClient
 import org.cef.CefSettings
 import org.cef.browser.CefBrowser
 import org.cef.browser.CefFrame
@@ -70,6 +68,7 @@ import org.cef.handler.CefLoadHandler
 import org.cef.handler.CefLoadHandlerAdapter
 import org.cef.handler.CefMessageRouterHandlerAdapter
 import org.cef.handler.CefPermissionHandler
+import org.cef.handler.CefRenderHandlerAdapter
 import org.cef.handler.CefRequestHandler
 import org.cef.handler.CefRequestHandlerAdapter
 import org.cef.handler.CefResourceHandler
@@ -84,12 +83,14 @@ import org.cef.network.CefPostDataElement
 import org.cef.network.CefRequest
 import org.cef.network.CefResponse
 import org.koin.mp.KoinPlatformTools
+import java.awt.Rectangle
 import java.io.BufferedWriter
 import java.io.File
 import java.io.IOException
+import java.nio.ByteBuffer
 import java.util.concurrent.Executor
-import kotlin.collections.Map
-import kotlin.reflect.KClass
+import javax.swing.JPanel
+import kotlin.math.min
 import kotlin.reflect.KFunction
 import kotlin.reflect.full.declaredMemberFunctions
 import kotlin.reflect.jvm.javaMethod
@@ -100,12 +101,13 @@ class KcefWebViewProvider(
     private val settings = KcefWebSettings()
     private var viewClient = WebViewClient()
     private var chromeClient = WebChromeClient()
+    private val renderHandler = RenderHandler()
     private val mappings: MutableList<FunctionMapping> = mutableListOf()
     private val urlHttpMapping: MutableMap<String, String> = mutableMapOf()
     private var initialRequestData: InitialRequestData? = null
 
-    private var kcefClient: KCEFClient? = null
-    private var browser: KCEFBrowser? = null
+    private var kcefClient: CefClient? = null
+    private var browser: CefBrowser? = null
 
     private val handler = Handler(view.webViewLooper)
 
@@ -117,8 +119,8 @@ class KcefWebViewProvider(
         private val initHandler: InitBrowserHandler by KoinPlatformTools.defaultContext().get().inject()
     }
 
-    public interface InitBrowserHandler {
-        public fun init(provider: KcefWebViewProvider): Unit
+    interface InitBrowserHandler {
+        fun init(provider: KcefWebViewProvider): Unit
     }
 
     private data class InitialRequestData(
@@ -194,7 +196,7 @@ class KcefWebViewProvider(
         }
     }
 
-    private inner class DisplayHandler : CefDisplayHandlerAdapter() {
+    private class DisplayHandler : CefDisplayHandlerAdapter() {
         override fun onConsoleMessage(
             browser: CefBrowser,
             level: CefSettings.LogSeverity,
@@ -222,6 +224,7 @@ class KcefWebViewProvider(
         }
     }
 
+    @Suppress("DEPRECATION")
     private inner class LoadHandler : CefLoadHandlerAdapter() {
         override fun onLoadEnd(
             browser: CefBrowser,
@@ -368,7 +371,7 @@ class KcefWebViewProvider(
             callback: CefCallback,
         ): Boolean {
             val data = resolvedData ?: return false
-            val bytesToTransfer = Math.min(bytesToRead, data.size - readOffset)
+            val bytesToTransfer = min(bytesToRead, data.size - readOffset)
             Log.v(
                 TAG,
                 "readResponse: $readOffset/${data.size}, reading $bytesToRead->$bytesToTransfer",
@@ -380,7 +383,7 @@ class KcefWebViewProvider(
         }
     }
 
-    private inner class WebResponseResourceHandler(
+    private class WebResponseResourceHandler(
         val webResponse: WebResourceResponse,
     ) : ArrayResponseResourceHandler() {
         override fun processRequest(
@@ -410,7 +413,7 @@ class KcefWebViewProvider(
         }
     }
 
-    private inner class HtmlResponseResourceHandler(
+    private class HtmlResponseResourceHandler(
         val html: String,
     ) : ArrayResponseResourceHandler() {
         override fun processRequest(
@@ -441,7 +444,7 @@ class KcefWebViewProvider(
                     view,
                     CefWebResourceRequest(request, frame, false),
                 )
-            Log.v(TAG, "Resource ${request?.url}, result is cancel? $cancel")
+            Log.v(TAG, "Resource ${request.url}, result is cancel? $cancel")
 
             handler.post { viewClient.onLoadResource(view, frame?.url) }
 
@@ -468,7 +471,7 @@ class KcefWebViewProvider(
                 }
             if (response == null) {
                 // prefer user's response override
-                urlHttpMapping.get(request.url.trimEnd('/'))?.let {
+                urlHttpMapping[request.url.trimEnd('/')]?.let {
                     return HtmlResponseResourceHandler(it)
                 }
             }
@@ -477,6 +480,7 @@ class KcefWebViewProvider(
         }
     }
 
+    @Suppress("DEPRECATION")
     private inner class RequestHandler : CefRequestHandlerAdapter() {
         override fun getResourceRequestHandler(
             browser: CefBrowser,
@@ -486,11 +490,13 @@ class KcefWebViewProvider(
             isDownload: Boolean,
             requestInitiator: String,
             disableDefaultHandling: BoolRef,
-        ): CefResourceRequestHandler? = ResourceRequestHandler()
+        ): CefResourceRequestHandler = ResourceRequestHandler()
 
         override fun onRenderProcessTerminated(
             browser: CefBrowser,
             status: CefRequestHandler.TerminationStatus,
+            errorCode: Int,
+            errorString: String,
         ) {
             handler.post {
                 viewClient.onRenderProcessGone(
@@ -509,15 +515,30 @@ class KcefWebViewProvider(
         override fun onRequestMediaAccessPermission(
             browser: CefBrowser,
             frame: CefFrame,
-            requesting_url: String,
-            requested_permissions: Int,
+            requestingUrl: String,
+            requestedPermissions: Int,
             callback: CefMediaAccessCallback,
         ): Boolean {
             handler.post {
-                Log.v(TAG, "Checking permission for $requesting_url: $requested_permissions")
-                chromeClient.onPermissionRequest(CefPermissionRequest(requesting_url, requested_permissions, callback))
+                Log.v(TAG, "Checking permission for $requestingUrl: $requestedPermissions")
+                chromeClient.onPermissionRequest(CefPermissionRequest(requestingUrl, requestedPermissions, callback))
             }
             return true
+        }
+    }
+
+    private class RenderHandler : CefRenderHandlerAdapter() {
+        override fun getViewRect(browser: CefBrowser): Rectangle = Rectangle(0, 0, 1280, 2856)
+
+        override fun onPaint(
+            browser: CefBrowser,
+            popup: Boolean,
+            dirtyRects: Array<Rectangle>,
+            buffer: ByteBuffer,
+            width: Int,
+            height: Int,
+        ) {
+            // do nothing
         }
     }
 
@@ -528,16 +549,18 @@ class KcefWebViewProvider(
         Log.v(TAG, "KcefWebViewProvider: initialize")
         destroy()
         kcefClient =
-            KCEF.newClientBlocking().apply {
-                addDisplayHandler(DisplayHandler())
-                addLoadHandler(LoadHandler())
-                addRequestHandler(RequestHandler())
-                addPermissionHandler(PermissionHandler())
+            runBlocking {
+                CefHelper.createClient().apply {
+                    addDisplayHandler(DisplayHandler())
+                    addLoadHandler(LoadHandler())
+                    addRequestHandler(RequestHandler())
+                    addPermissionHandler(PermissionHandler())
 
-                val config = CefMessageRouter.CefMessageRouterConfig()
-                config.jsQueryFunction = QUERY_FN
-                config.jsCancelFunction = QUERY_CANCEL_FN
-                addMessageRouter(CefMessageRouter.create(config, MessageRouterHandler()))
+                    val config = CefMessageRouter.CefMessageRouterConfig()
+                    config.jsQueryFunction = QUERY_FN
+                    config.jsCancelFunction = QUERY_CANCEL_FN
+                    addMessageRouter(CefMessageRouter.create(config, MessageRouterHandler()))
+                }
             }
         initHandler.init(this)
     }
@@ -614,7 +637,8 @@ class KcefWebViewProvider(
             kcefClient!!
                 .createBrowser(
                     loadUrl,
-                    CefRendering.OFFSCREEN,
+                    CefRendering.CefRenderingWithHandler(renderHandler, JPanel()),
+                    false,
                 ).apply {
                     // NOTE: Without this, we don't seem to be receiving any events
                     createImmediately()
@@ -638,7 +662,8 @@ class KcefWebViewProvider(
             kcefClient!!
                 .createBrowser(
                     url,
-                    CefRendering.OFFSCREEN,
+                    CefRendering.CefRenderingWithHandler(renderHandler, JPanel()),
+                    false,
                 ).apply {
                     // NOTE: Without this, we don't seem to be receiving any events
                     createImmediately()
@@ -664,27 +689,19 @@ class KcefWebViewProvider(
         browser?.close(true)
         browser?.dispose()
         chromeClient.onProgressChanged(view, 0)
+        val url = baseUrl ?: "about:blank"
+        urlHttpMapping[url.trimEnd('/')] = data
 
         browser =
-            (
-                baseUrl?.let { url ->
-                    urlHttpMapping.put(url.trimEnd('/'), data)
-                    kcefClient!!.createBrowser(
-                        url,
-                        CefRendering.OFFSCREEN,
-                    )
+            kcefClient!!
+                .createBrowser(
+                    url,
+                    CefRendering.CefRenderingWithHandler(renderHandler, JPanel()),
+                    false,
+                ).apply {
+                    // NOTE: Without this, we don't seem to be receiving any events
+                    createImmediately()
                 }
-                    ?: run {
-                        kcefClient!!.createBrowserWithHtml(
-                            data,
-                            KCEFBrowser.BLANK_URI,
-                            CefRendering.OFFSCREEN,
-                        )
-                    }
-            ).apply {
-                // NOTE: Without this, we don't seem to be receiving any events
-                createImmediately()
-            }
         Log.d(TAG, "Page loaded from data at base URL $baseUrl")
     }
 
@@ -694,11 +711,11 @@ class KcefWebViewProvider(
     ) {
         browser!!.evaluateJavaScript(
             script.removePrefix("javascript:"),
+        )
             {
                 Log.v(TAG, "JS returned: $it")
                 it?.let { handler.post { resultCallback?.onReceiveValue(it) } }
-            },
-        )
+            }
     }
 
     override fun saveWebArchive(filename: String): Unit = throw RuntimeException("Stub!")
@@ -778,15 +795,23 @@ class KcefWebViewProvider(
 
     override fun getContentWidth(): Int = throw RuntimeException("Stub!")
 
-    override fun pauseTimers(): Unit = throw RuntimeException("Stub!")
+    override fun pauseTimers() {
+        Log.v(TAG, "pauseTimers: doing nothing")
+    }
 
-    override fun resumeTimers(): Unit = throw RuntimeException("Stub!")
+    override fun resumeTimers() {
+        Log.v(TAG, "resumeTimers: doing nothing")
+    }
 
-    override fun onPause(): Unit = throw RuntimeException("Stub!")
+    override fun onPause() {
+        Log.v(TAG, "onPause: doing nothing")
+    }
 
-    override fun onResume(): Unit = throw RuntimeException("Stub!")
+    override fun onResume() {
+        Log.v(TAG, "onResume: doing nothing")
+    }
 
-    override fun isPaused(): Boolean = throw RuntimeException("Stub!")
+    override fun isPaused(): Boolean = false
 
     override fun freeMemory(): Unit = throw RuntimeException("Stub!")
 
@@ -840,6 +865,7 @@ class KcefWebViewProvider(
 
     override fun getWebChromeClient(): WebChromeClient = chromeClient
 
+    @Suppress("DEPRECATION")
     override fun setPictureListener(listener: PictureListener): Unit = throw RuntimeException("Stub!")
 
     @Serializable
@@ -862,7 +888,7 @@ class KcefWebViewProvider(
         obj: Any,
         interfaceName: String,
     ) {
-        val cls = obj::class as KClass<Any>
+        val cls = obj::class
         mappings.addAll(
             cls.declaredMemberFunctions.map {
                 // This is ridiculous, but necessary, otherwise "public final" throws
@@ -924,7 +950,8 @@ class KcefWebViewProvider(
     override fun getRendererPriorityWaivedWhenNotVisible(): Boolean = throw RuntimeException("Stub!")
 
     @SuppressWarnings("unused")
-    override fun setTextClassifier(textClassifier: TextClassifier?) {}
+    override fun setTextClassifier(textClassifier: TextClassifier?) {
+    }
 
     override fun getTextClassifier(): TextClassifier = TextClassifier.NO_OP
 
@@ -950,11 +977,13 @@ class KcefWebViewProvider(
         override fun onProvideAutofillVirtualStructure(
             @SuppressWarnings("unused") structure: android.view.ViewStructure,
             @SuppressWarnings("unused") flags: Int,
-        ) {}
+        ) {
+        }
 
         override fun autofill(
             @SuppressWarnings("unused") values: SparseArray<AutofillValue>,
-        ) {}
+        ) {
+        }
 
         override fun isVisibleToUserForAutofill(
             @SuppressWarnings("unused") virtualId: Int,
@@ -965,7 +994,8 @@ class KcefWebViewProvider(
         override fun onProvideContentCaptureStructure(
             @SuppressWarnings("unused") structure: android.view.ViewStructure,
             @SuppressWarnings("unused") flags: Int,
-        ) {}
+        ) {
+        }
 
         override fun getAccessibilityNodeProvider(): AccessibilityNodeProvider = throw RuntimeException("Stub!")
 
@@ -1035,7 +1065,8 @@ class KcefWebViewProvider(
         override fun onMovedToDisplay(
             displayId: Int,
             config: Configuration,
-        ) {}
+        ) {
+        }
 
         override fun onVisibilityChanged(
             changedView: View,

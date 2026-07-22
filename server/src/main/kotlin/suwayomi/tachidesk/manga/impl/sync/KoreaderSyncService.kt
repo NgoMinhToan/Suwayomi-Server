@@ -14,8 +14,10 @@ import kotlinx.serialization.json.put
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import org.jetbrains.exposed.sql.transactions.transaction
-import org.jetbrains.exposed.sql.update
+import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.jdbc.select
+import org.jetbrains.exposed.v1.jdbc.transactions.transaction
+import org.jetbrains.exposed.v1.jdbc.update
 import suwayomi.tachidesk.graphql.types.KoSyncStatusPayload
 import suwayomi.tachidesk.graphql.types.KoreaderSyncChecksumMethod
 import suwayomi.tachidesk.graphql.types.KoreaderSyncConflictStrategy
@@ -125,29 +127,36 @@ object KoreaderSyncService {
             }
 
             val mangaId = chapterRow[ChapterTable.manga].value
+            val isDownloaded = chapterRow[ChapterTable.isDownloaded]
             val checksumMethod = serverConfig.koreaderSyncChecksumMethod.value
 
             val newHash =
                 when (checksumMethod) {
                     KoreaderSyncChecksumMethod.BINARY -> {
-                        logger.debug { "[KOSYNC HASH] No hash for chapterId=$chapterId. Generating from downloaded content." }
-                        try {
-                            // Always create a CBZ in memory if it doesn't exist
-                            val (stream, _) = ChapterDownloadHelper.getArchiveStreamWithSize(mangaId, chapterId)
-                            // Write the stream to a temp file for partial hashing
-                            val tempFile = File.createTempFile("kosync-hash-", ".cbz")
+                        // Only generate binary hash if the chapter is downloaded to avoid fetching missing files
+                        if (isDownloaded) {
+                            logger.debug { "[KOSYNC HASH] No hash for chapterId=$chapterId. Generating from downloaded content." }
                             try {
-                                tempFile.outputStream().use { fos ->
-                                    stream.use { it.copyTo(fos) }
+                                // Always create a CBZ in memory if it doesn't exist
+                                val (stream, _) = ChapterDownloadHelper.getArchiveStreamWithSize(mangaId, chapterId)
+                                // Write the stream to a temp file for partial hashing
+                                val tempFile = File.createTempFile("kosync-hash-", ".cbz")
+                                try {
+                                    tempFile.outputStream().use { fos ->
+                                        stream.use { it.copyTo(fos) }
+                                    }
+                                    // Use the same hashing method as for downloads
+                                    KoreaderHelper.hashContents(tempFile)
+                                } finally {
+                                    // Always delete the temp file
+                                    tempFile.delete()
                                 }
-                                // Use the same hashing method as for downloads
-                                KoreaderHelper.hashContents(tempFile)
-                            } finally {
-                                // Always delete the temp file
-                                tempFile.delete()
+                            } catch (e: Exception) {
+                                logger.warn(e) { "[KOSYNC HASH] Failed to generate archive stream for chapterId=$chapterId." }
+                                null
                             }
-                        } catch (e: Exception) {
-                            logger.warn(e) { "[KOSYNC HASH] Failed to generate archive stream for chapterId=$chapterId." }
+                        } else {
+                            logger.debug { "[KOSYNC HASH] Skipping binary hash for chapterId=$chapterId because it is not downloaded." }
                             null
                         }
                     }
@@ -173,7 +182,7 @@ object KoreaderSyncService {
                 }
                 logger.info { "[KOSYNC HASH] Generated and saved new hash for chapterId=$chapterId" }
             } else {
-                logger.warn { "[KOSYNC HASH] Hashing failed for chapterId=$chapterId." }
+                logger.warn { "[KOSYNC HASH] Hashing failed or skipped for chapterId=$chapterId." }
             }
             newHash
         }
