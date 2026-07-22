@@ -33,15 +33,6 @@ fun getComicInfo(
     val localDate =
         Instant.ofEpochMilli(dateUpload).atZone(ZoneId.systemDefault()).toLocalDate()
 
-    val sourceName =
-        transaction {
-            SourceTable
-                .selectAll()
-                .where { SourceTable.id eq manga[MangaTable.sourceReference] }
-                .firstOrNull()
-                ?.get(SourceTable.name)
-        }
-
     return ComicInfo(
         title = ComicInfo.Title(chapter[ChapterTable.name]),
         series = ComicInfo.Series(manga[MangaTable.title]),
@@ -63,7 +54,6 @@ fun getComicInfo(
             ComicInfo.PublishingStatusTachiyomi(
                 ComicInfoPublishingStatus.toComicInfoValue(manga[MangaTable.status].toLong()),
             ),
-        sourceMihon = sourceName?.let { ComicInfo.SourceMihon(it) },
         categories = categories?.let { ComicInfo.CategoriesTachiyomi(it.joinToString()) },
         inker = null,
         colorist = null,
