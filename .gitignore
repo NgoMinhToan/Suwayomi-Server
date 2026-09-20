@@ -21,3 +21,7 @@ scripts/zulu*
 scripts/electron-*
 scripts/rcedit-*
 scripts/resources/*.so
+
+
+.agents
+skills-lock.json

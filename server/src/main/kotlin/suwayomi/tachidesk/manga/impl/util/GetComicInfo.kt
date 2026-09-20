@@ -7,6 +7,7 @@ import nl.adaptivity.xmlutil.serialization.XML
 import org.jetbrains.exposed.v1.core.ResultRow
 import suwayomi.tachidesk.manga.model.table.ChapterTable
 import suwayomi.tachidesk.manga.model.table.MangaTable
+import suwayomi.tachidesk.manga.model.table.SourceTable
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.nio.file.Path
