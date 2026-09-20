@@ -220,6 +220,23 @@ class ServerConfig(
         defaultValue = false,
     )
 
+    val downloadComicInfoToMangaFolder: MutableStateFlow<Boolean> by BooleanSetting(
+        // Keep fork-specific backup fields away from upstream's sequential IDs.
+        protoNumber = 10001,
+        group = SettingGroup.DOWNLOADER,
+        privacySafe = true,
+        defaultValue = false,
+        description = "Save ComicInfo.xml file with manga metadata in download folder",
+    )
+
+    val downloadCoverToMangaFolder: MutableStateFlow<Boolean> by BooleanSetting(
+        protoNumber = 10002,
+        group = SettingGroup.DOWNLOADER,
+        privacySafe = true,
+        defaultValue = false,
+        description = "Save cover image in download folder",
+    )
+
     val downloadsPath: MutableStateFlow<String> by PathSetting(
         protoNumber = 16,
         group = SettingGroup.DOWNLOADER,

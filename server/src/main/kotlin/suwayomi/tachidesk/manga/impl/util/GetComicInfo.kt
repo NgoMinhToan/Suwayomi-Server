@@ -13,6 +13,7 @@ import suwayomi.tachidesk.manga.model.table.CategoryMangaTable
 import suwayomi.tachidesk.manga.model.table.CategoryTable
 import suwayomi.tachidesk.manga.model.table.ChapterTable
 import suwayomi.tachidesk.manga.model.table.MangaTable
+import suwayomi.tachidesk.manga.model.table.SourceTable
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.nio.file.Path

@@ -15,6 +15,8 @@ import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import org.jetbrains.exposed.v1.jdbc.update
+import suwayomi.tachidesk.graphql.types.DownloadConversion
+import suwayomi.tachidesk.manga.impl.Manga
 import suwayomi.tachidesk.manga.impl.Page
 import suwayomi.tachidesk.manga.impl.chapter.getChapterDownloadReady
 import suwayomi.tachidesk.manga.impl.download.model.DownloadQueueItem
@@ -23,9 +25,11 @@ import suwayomi.tachidesk.manga.impl.util.createComicInfoFile
 import suwayomi.tachidesk.manga.impl.util.getChapterCachePath
 import suwayomi.tachidesk.manga.impl.util.getChapterCbzPath
 import suwayomi.tachidesk.manga.impl.util.getChapterDownloadPath
+import suwayomi.tachidesk.manga.impl.util.getMangaDownloadDir
 import suwayomi.tachidesk.manga.impl.util.storage.ImageResponse
 import suwayomi.tachidesk.manga.model.table.ChapterTable
 import suwayomi.tachidesk.manga.model.table.MangaTable
+import suwayomi.tachidesk.server.serverConfig
 import java.io.File
 import java.io.InputStream
 
@@ -184,6 +188,35 @@ abstract class ChaptersFilesProvider<Type : FileType>(
                 ChapterTable.selectAll().where { ChapterTable.id eq chapterId }.first()
             },
         )
+
+        val mangaDownloadFolder = File(getMangaDownloadDir(mangaId))
+        mangaDownloadFolder.mkdirs()
+        
+        // Optional metadata files (ComicInfo.xml and cover image) for downloaded chapters.
+        if (serverConfig.downloadCoverToMangaFolder.value) {
+            try {
+                val (inputStream, mimeType) = Manga.fetchMangaThumbnail(mangaId)
+                ImageResponse.saveImage(
+                    File(mangaDownloadFolder, "cover").path,
+                    inputStream,
+                    mimeType,
+                )
+            } catch (e: Exception) {
+                logger.warn(e) { "Failed to download cover image for mangaId=$mangaId" }
+            }
+        }
+
+        if (serverConfig.downloadComicInfoToMangaFolder.value) {
+            createComicInfoFile(
+                mangaDownloadFolder.toPath(),
+                transaction {
+                    MangaTable.selectAll().where { MangaTable.id eq mangaId }.first()
+                },
+                transaction {
+                    ChapterTable.selectAll().where { ChapterTable.id eq chapterId }.first()
+                },
+            )
+        }
 
         handleSuccessfulDownload()
 
